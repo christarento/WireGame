@@ -7,6 +7,7 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <util/atomic.h>
 
 /*!
  * Target : ATtiny24A
@@ -35,25 +36,57 @@
  *
  */
 
-#define BCD_DRIVER_A 0
-#define BCD_DRIVER_B 0
-#define BCD_DRIVER_C 0
-#define BCD_DRIVER_D 0
 #define BLANK_DISPLAY 15
-#define BUZZER 0
-
-#define START_IN 0 //
-#define STOP_IN 0
-#define SENSOR_IN 0
-#define BUZZER_VOLUME_IN 0
 
 #define DEBOUNCE_TIME 15
 #define BOUND_TIME 2000
 
 
+#define clockCyclesToMicroseconds(a) ( ((a) * 1000L) / (F_CPU / 1000L) )
+// the prescaler is set so that timer0 ticks every 64 clock cycles, and the
+// the overflow handler is called every 256 ticks.
+#define MICROSECONDS_PER_TIMER0_OVERFLOW (clockCyclesToMicroseconds(64 * 256))
+
+// the whole number of milliseconds per timer0 overflow
+#define MILLIS_INC (MICROSECONDS_PER_TIMER0_OVERFLOW / 1000)
+
+// the fractional number of milliseconds per timer0 overflow. we shift right
+// by three to fit these numbers into a byte. (for the clock speeds we care
+// about - 8 and 16 MHz - this doesn't lose precision.)
+#define FRACT_INC ((MICROSECONDS_PER_TIMER0_OVERFLOW % 1000) >> 3)
+#define FRACT_MAX (1000 >> 3)
+
+volatile uint16_t timer0_overflow_count = 0;
+volatile uint16_t timer0_millis = 0;
+static uint8_t timer0_fract = 0;
+
+ISR(TIM0_OVF_vect)
+{
+	// copy these to local variables so they can be stored in registers
+	// (volatile variables must be read from memory on every access)
+	uint16_t m = timer0_millis;
+	uint8_t f = timer0_fract;
+
+	m += MILLIS_INC;
+	f += FRACT_INC;
+	if (f >= FRACT_MAX) {
+		f -= FRACT_MAX;
+		m += 1;
+	}
+
+	timer0_fract = f;
+	timer0_millis = m;
+	timer0_overflow_count++;
+}
+
 uint16_t millis()
 {
-	//TODO
+	uint16_t m;
+
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+		m = timer0_millis;
+
+	return m;
 }
 
 
@@ -88,7 +121,7 @@ void Contact_update(Contact* self)
 /**
  * \param a_time must be <65535
  */
-uint8_t Contact_lastOver(Contact* self, uint16_t a_time)
+uint8_t Contact_last_over(Contact* self, uint16_t a_time)
 {
 	return ((millis() - self->_time) > a_time);
 }
@@ -123,6 +156,12 @@ void Game_init()
 	game._start = game._end = 0;
 }
 
+void Game_over()
+{
+	game._state = STOPPED;
+	game._score = 9;
+}
+
 void Game_reset(Contact* a_start)
 {
 	game._state = PENDING;
@@ -140,6 +179,14 @@ void Game_start()
 void Game_terminate()
 {
 	game._state = STOPPED;
+}
+
+void Game_score_up()
+{
+	if (game._score < 8)
+		++game._score;
+	else
+		Game_over();
 }
 
 
@@ -190,19 +237,16 @@ int main(void)
 	Volume = ADCH;//get value from high byte only (left adjust result)
 	
 	
+		
 	/************************************************************************/
 	/* GAME                                                                 */
 	/************************************************************************/
+	sei();//enable global interrupt mask
 	Contact_init(&bound0, PINB0);
 	Contact_init(&bound1, PINB1);
 	Game_init();
 	
-	
-	uint8_t start_pin = -1;
-	uint8_t stop_pin = -1;
-	
-	Contact* start, end;
-	
+		
     while (1)
     {
 		//si on touche un bord plus de 3 secondes, celui-ci devient start -> init_game(PIN_NBR)
@@ -216,56 +260,46 @@ int main(void)
 		//a score 9 -> beep beep
 		//durant le jeu -> display clignote
 		
+		//Update contact state
 		Contact_update(&bound0);
 		Contact_update(&bound1);
+		Contact_update(&sensor);
 		
-		//read at BOUND0_PIN
-		if (!bound0._state && Contact_lastOver(&bound0, BOUND_TIME))
+		//read at bound0
+		if (!bound0._state && Contact_last_over(&bound0, BOUND_TIME))
 		{
 			Game_reset(&bound0);
 		}
 				
-		//read at BOUND1_PIN
-		if (!bound1._state && Contact_lastOver(&bound1, BOUND_TIME))
+		//read at bound1
+		if (!bound1._state && Contact_last_over(&bound1, BOUND_TIME))
 		{
 			Game_reset(&bound1);
 		}			
-						
-		//read at SENSOR_PIN
-		if (status == IN_PROGRESS)
-		{
-			Contact_update(&sensor);
-			if (!sensor._state && is_contact_stable(&sensor))
-			{
-				if (score != 9)
-				{
-					++score;
-				}
-				
-				if (score == 9)
-				{
-					terminate_game();
-				}
-			}
-		}			
-		//if (status == IN_PROGRESS)
-		//{
-			//const uint8_t sensor_state = (PINB & PINB2);
-			//if (sensor_state != last_sensor_state)//touch sensor wire
-			//{
-				//last_touch_time = millis();
-				//last_sensor_state = sensor_state;
-			//}
-			//
-			//if (!last_sensor_state && (millis() - last_touch_time) > DEBOUNCE_TIME)
-			//{
-				//if (score != 15)
-				//{
-					//++score;
-					//update_display();
-				//}					
-			//}
-		//}
 		
+		
+		//check game is init
+		if (!game._start)
+			continue;
+		
+		//read at start
+		if (game._state == PENDING)
+		{
+			if (game._start->_state && Contact_last_over(game._start, DEBOUNCE_TIME))
+				Game_start();
+		}
+		
+		if (game._state == IN_PROGRESS)
+		{
+			//read at end
+			if (!game._end->_state)
+				Game_terminate();
+			
+			//read at sensor
+			if (!sensor._state && Contact_last_over(&sensor, DEBOUNCE_TIME))
+				Game_score_up();
+		}			
     }
+	
+	return 0;
 }
