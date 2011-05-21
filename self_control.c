@@ -32,20 +32,27 @@
  */
 
 
-/*!
- *
- */
-
+/************************************************************************/
+/* CONSTANTS                                                            */
+/************************************************************************/
 #define BLANK_DISPLAY 15
 
 #define DEBOUNCE_TIME 15
 #define BOUND_TIME 2000
 
+#define GAME_MAX_DURATION 30000
 
+#define BUZZER_FREQUENCY 6600
+#define BUZZER_DURATION 250
+
+
+/************************************************************************/
+/* TIMER0 INTERRUPT                                                     */
+/************************************************************************/
 #define clockCyclesToMicroseconds(a) ( ((a) * 1000L) / (F_CPU / 1000L) )
-// the prescaler is set so that timer0 ticks every 64 clock cycles, and the
+// the prescaler is set so that timer0 ticks every 8 clock cycles, and the
 // the overflow handler is called every 256 ticks.
-#define MICROSECONDS_PER_TIMER0_OVERFLOW (clockCyclesToMicroseconds(64 * 256))
+#define MICROSECONDS_PER_TIMER0_OVERFLOW (clockCyclesToMicroseconds(8 * 256))
 
 // the whole number of milliseconds per timer0 overflow
 #define MILLIS_INC (MICROSECONDS_PER_TIMER0_OVERFLOW / 1000)
@@ -56,37 +63,68 @@
 #define FRACT_INC ((MICROSECONDS_PER_TIMER0_OVERFLOW % 1000) >> 3)
 #define FRACT_MAX (1000 >> 3)
 
-volatile uint16_t timer0_overflow_count = 0;
-volatile uint16_t timer0_millis = 0;
-static uint8_t timer0_fract = 0;
+volatile unsigned long timer0_millis = 0;
+unsigned char timer0_fract = 0;
 
-ISR(TIM0_OVF_vect)
+ISR (TIM0_OVF_vect)
 {
 	// copy these to local variables so they can be stored in registers
 	// (volatile variables must be read from memory on every access)
-	uint16_t m = timer0_millis;
-	uint8_t f = timer0_fract;
+	unsigned long m = timer0_millis;
+	unsigned long f = timer0_fract;
 
 	m += MILLIS_INC;
 	f += FRACT_INC;
-	if (f >= FRACT_MAX) {
+	if (f >= FRACT_MAX)
+	{
 		f -= FRACT_MAX;
-		m += 1;
+		++m;
 	}
 
 	timer0_fract = f;
 	timer0_millis = m;
-	timer0_overflow_count++;
 }
 
-uint16_t millis()
+unsigned long millis()
 {
-	uint16_t m;
+	unsigned long m;
 
-	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	ATOMIC_BLOCK (ATOMIC_RESTORESTATE)
 		m = timer0_millis;
 
 	return m;
+}
+
+
+/************************************************************************/
+/* TIMER1 INTERRUPT                                                     */
+/************************************************************************/
+volatile unsigned long timer1_period_count = 0;
+
+ISR (TIM1_OVF_vect)
+{
+	unsigned long tmp_timer1_period_count = timer1_period_count;
+	if (tmp_timer1_period_count)
+	{
+		timer1_period_count = tmp_timer1_period_count - 1;
+	}
+	else
+	{
+		TIMSK1 = 0;//Timer/Counter1 Overflow Interrupt Disable
+		PORTA &= ~(1<<OC1B_PIN);
+	}
+}
+
+
+/************************************************************************/
+/* Buzzer                                                               */
+/************************************************************************/
+void Buzzer_play()
+{
+	ATOMIC_BLOCK (ATOMIC_RESTORESTATE)
+		timer1_period_count = (unsigned long)BUZZER_FREQUENCY * BUZZER_DURATION / 1000;
+	
+	TIMSK1 = (1<<TOIE1);//Timer/Counter1 Overflow Interrupt Enable
 }
 
 
@@ -97,7 +135,7 @@ typedef struct
 {
 	uint8_t _port;
 	uint8_t _state;
-	uint16_t _time;
+	uint32_t _time;
 } Contact;
 Contact bound0, bound1;
 Contact sensor;
@@ -105,7 +143,7 @@ Contact sensor;
 void Contact_init(Contact* self, uint8_t a_port)
 {
 	self->_port = a_port;
-	self->_state = 0xff & a_port;
+	self->_state = a_port;
 }
 
 void Contact_update(Contact* self)
@@ -144,7 +182,7 @@ typedef struct
 	uint8_t _score;
 	Contact* _start;
 	Contact* _end;
-	uint16_t _time;
+	uint32_t _start_time;
 } Game;
 Game game;
 
@@ -162,6 +200,12 @@ void Game_over()
 	game._score = 9;
 }
 
+void Game_check_time()
+{
+	if (millis() - game._start_time > GAME_MAX_DURATION)
+		Game_over();
+}
+
 void Game_reset(Contact* a_start)
 {
 	game._state = PENDING;
@@ -173,7 +217,7 @@ void Game_reset(Contact* a_start)
 void Game_start()
 {
 	game._state = IN_PROGRESS;
-	game._time = millis();
+	game._start_time = millis();
 }
 
 void Game_terminate()
@@ -191,17 +235,40 @@ void Game_score_up()
 
 
 /************************************************************************/
-/* MISC                                                                 */
+/* DISPLAY                                                              */
 /************************************************************************/
-uint8_t Volume;
-
-void update_display()
+typedef struct 
 {
-	//update display
+	uint8_t _value;
+} Display;
+Display display;
+
+void Display_init()
+{
+	display._value = 0;
 	PINA &= 0b11110000;
-	PINA |= game._score;
 }	
 
+void Display_update()
+{
+	if (display._value != game._score)
+	{
+		display._value = game._score;
+		
+		if (game._state == IN_PROGRESS)
+		{
+			unsigned char sec = millis() / 1000;
+			if (sec & 1)
+			{
+				PINA = (PINA & 0b11110000) | BLANK_DISPLAY;
+			}
+			else
+			{
+				PINA = (PINA & 0b11110000) | display._value;
+			}
+		}
+	}
+}
 
 /************************************************************************/
 /* MAIN                                                                 */
@@ -221,20 +288,26 @@ int main(void)
 	ADCSRB = (1<<ADLAR);//ADC Left Adjust Result
 		
 	//PWM for buzzer
-	OCR1A = 1211;//6.6KHz = fPWM = fT1/(N*(1+TOP))
+	OCR1A = F_CPU / BUZZER_FREQUENCY - 1;//6.6KHz = fPWM = fT1/(N*(1+TOP))
 	OCR1B = 0;
 	TCCR1A = (1<<COM1B1) | (1<<WGM11) | (1<<WGM10);//non-inverted PWM -> COM1B[1:0] = 10 ; fast PWM with TOP=OCR1A -> WGM1[3:0] = 1111
 	TCCR1B = (1<<WGM13) | (1<<WGM12) | (1<<CS10);//fT1 = fCLK_IO / 1
-		
+	
+	//Timer to measure time with millis()
+	TCCR0A = 0;//normal port operation, non-PWM mode
+	TCCR0B = (1<<CS01);//fT0 = fCLK_IO / 8 -> CS0[2:0] = 010
+	TIMSK0 = (1<<TOIE0);//Timer/Counter0 Overflow Interrupt Enable
+	
 	
 	/************************************************************************/
 	/* BUZZER VOLUME                                                        */
 	/************************************************************************/
 	ADMUX = 7;//ADC channel 7
 	ADCSRA |= (1<<ADSC);//start ADC conversion
-	while (!(ADCSRA & (1<<ADIF)));//poll ADC Interrupt Flag
+	while (!(ADCSRA & (1<<ADIF)))
+		;//poll ADC Interrupt Flag
 	ADCSRA |= (1<<ADIF);//clear ADC Interrupt Flag
-	Volume = ADCH;//get value from high byte only (left adjust result)
+	OCR1BL = ADCH;//set volume from high byte only (left adjust result)
 	
 	
 		
@@ -245,7 +318,7 @@ int main(void)
 	Contact_init(&bound0, PINB0);
 	Contact_init(&bound1, PINB1);
 	Game_init();
-	
+	Display_init();
 		
     while (1)
     {
@@ -260,6 +333,10 @@ int main(void)
 		//a score 9 -> beep beep
 		//durant le jeu -> display clignote
 		
+		//Check game time
+		if (game._state == IN_PROGRESS)
+			Game_check_time();
+		
 		//Update contact state
 		Contact_update(&bound0);
 		Contact_update(&bound1);
@@ -267,38 +344,36 @@ int main(void)
 		
 		//read at bound0
 		if (!bound0._state && Contact_last_over(&bound0, BOUND_TIME))
-		{
 			Game_reset(&bound0);
-		}
 				
 		//read at bound1
 		if (!bound1._state && Contact_last_over(&bound1, BOUND_TIME))
-		{
 			Game_reset(&bound1);
-		}			
 		
 		
 		//check game is init
-		if (!game._start)
-			continue;
-		
-		//read at start
-		if (game._state == PENDING)
+		if (game._start)
 		{
-			if (game._start->_state && Contact_last_over(game._start, DEBOUNCE_TIME))
-				Game_start();
+			//read at start
+			if (game._state == PENDING)
+			{
+				if (game._start->_state && Contact_last_over(game._start, DEBOUNCE_TIME))
+					Game_start();
+			}
+		
+			if (game._state == IN_PROGRESS)
+			{
+				//read at end
+				if (!game._end->_state)
+					Game_terminate();
+			
+				//read at sensor
+				if (!sensor._state && Contact_last_over(&sensor, DEBOUNCE_TIME))
+					Game_score_up();
+			}
 		}
 		
-		if (game._state == IN_PROGRESS)
-		{
-			//read at end
-			if (!game._end->_state)
-				Game_terminate();
-			
-			//read at sensor
-			if (!sensor._state && Contact_last_over(&sensor, DEBOUNCE_TIME))
-				Game_score_up();
-		}			
+		Display_update();	
     }
 	
 	return 0;
