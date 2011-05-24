@@ -43,7 +43,8 @@
 #define GAME_MAX_DURATION 30000
 
 #define BUZZER_FREQUENCY 6600
-#define BUZZER_DURATION 250
+#define BUZZER_EVENT 200
+#define BUZZER_GAME_OVER 400
 
 
 /************************************************************************/
@@ -119,10 +120,10 @@ ISR (TIM1_OVF_vect)
 /************************************************************************/
 /* Buzzer                                                               */
 /************************************************************************/
-void Buzzer_play()
+void Buzzer_play(uint16_t a_duration)
 {
 	ATOMIC_BLOCK (ATOMIC_RESTORESTATE)
-		timer1_period_count = (unsigned long)BUZZER_FREQUENCY * BUZZER_DURATION / 1000;
+		timer1_period_count = ((unsigned long)BUZZER_FREQUENCY * a_duration) / 1000;
 	
 	TIMSK1 = (1<<TOIE1);//Timer/Counter1 Overflow Interrupt Enable
 }
@@ -198,6 +199,7 @@ void Game_over()
 {
 	game._state = STOPPED;
 	game._score = 9;
+	Buzzer_play(BUZZER_GAME_OVER);
 }
 
 void Game_check_time()
@@ -212,23 +214,29 @@ void Game_reset(Contact* a_start)
 	game._score = 0;
 	game._start = a_start;
 	game._end = ((a_start == &bound0) ? &bound1 : &bound0);
+	Buzzer_play(BUZZER_EVENT);
 }
 
 void Game_start()
 {
 	game._state = IN_PROGRESS;
 	game._start_time = millis();
+	Buzzer_play(BUZZER_EVENT);
 }
 
 void Game_terminate()
 {
 	game._state = STOPPED;
+	Buzzer_play(BUZZER_EVENT);
 }
 
 void Game_score_up()
 {
 	if (game._score < 8)
+	{
 		++game._score;
+		Buzzer_play(BUZZER_EVENT);
+	}		
 	else
 		Game_over();
 }
@@ -327,6 +335,7 @@ int main(void)
 		//si on touche le fil plus de 15ms c'est une touche
 		//au bout de 30s, score 9
 		//si on touche le bord de fin, c'est fini
+		//si on touche plus de N secondes c'est fini
 		//si score 9 c'est fini
 		
 		//a la touche -> beep
@@ -368,8 +377,13 @@ int main(void)
 					Game_terminate();
 			
 				//read at sensor
-				if (!sensor._state && Contact_last_over(&sensor, DEBOUNCE_TIME))
-					Game_score_up();
+				if (!sensor._state)
+				{
+					if (Contact_last_over(&sensor, BOUND_TIME))
+						Game_over();
+					else if (Contact_last_over(&sensor, DEBOUNCE_TIME))
+						Game_score_up();
+				}						
 			}
 		}
 		
