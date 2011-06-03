@@ -37,14 +37,12 @@
 /************************************************************************/
 #define BLANK_DISPLAY 15
 
-#define DEBOUNCE_TIME 15
-#define BOUND_TIME 2000
+#define DEBOUNCE_TIME 40
+#define BOUND_TIME 1800
 
-#define GAME_MAX_DURATION 30000
-
-#define BUZZER_FREQUENCY 6600
+#define BUZZER_FREQUENCY 4000
 #define BUZZER_EVENT 200
-#define BUZZER_GAME_OVER 400
+#define BUZZER_LONG_EVENT 750
 
 
 /************************************************************************/
@@ -65,24 +63,22 @@
 #define FRACT_MAX (1000 >> 3)
 
 volatile unsigned long timer0_millis = 0;
-unsigned char timer0_fract = 0;
+static unsigned char timer0_fract = 0;
 
 ISR (TIM0_OVF_vect)
 {
 	// copy these to local variables so they can be stored in registers
 	// (volatile variables must be read from memory on every access)
 	unsigned long m = timer0_millis;
-	unsigned long f = timer0_fract;
 
 	m += MILLIS_INC;
-	f += FRACT_INC;
-	if (f >= FRACT_MAX)
+	timer0_fract += FRACT_INC;
+	if (timer0_fract >= FRACT_MAX)
 	{
-		f -= FRACT_MAX;
+		timer0_fract -= FRACT_MAX;
 		++m;
 	}
 
-	timer0_fract = f;
 	timer0_millis = m;
 }
 
@@ -104,15 +100,15 @@ volatile unsigned long timer1_period_count = 0;
 
 ISR (TIM1_OVF_vect)
 {
-	unsigned long tmp_timer1_period_count = timer1_period_count;
-	if (tmp_timer1_period_count)
+	if (timer1_period_count)
 	{
-		timer1_period_count = tmp_timer1_period_count - 1;
+		--timer1_period_count;
 	}
 	else
 	{
-		TIMSK1 = 0;//Timer/Counter1 Overflow Interrupt Disable
-		PORTA &= ~(1<<OC1B_PIN);
+		TCCR1B &= ~(1<<CS10);//Stop Timer/Counter1
+		TCNT1 = 0;//Reset Timer/Counter1 counter
+		PORTA &= ~(1<<OC1B_PIN);//force out to LOW
 	}
 }
 
@@ -125,7 +121,7 @@ void Buzzer_play(uint16_t a_duration)
 	ATOMIC_BLOCK (ATOMIC_RESTORESTATE)
 		timer1_period_count = ((unsigned long)BUZZER_FREQUENCY * a_duration) / 1000;
 	
-	TIMSK1 = (1<<TOIE1);//Timer/Counter1 Overflow Interrupt Enable
+	TCCR1B |= (1<<CS10);//Start Timer/Counter1
 }
 
 
@@ -134,26 +130,30 @@ void Buzzer_play(uint16_t a_duration)
 /************************************************************************/
 typedef struct
 {
-	uint8_t _port;
+	uint8_t _port_mask;
 	uint8_t _state;
 	uint32_t _time;
+	uint8_t _used;
 } Contact;
 Contact bound0, bound1;
 Contact sensor;
 
 void Contact_init(Contact* self, uint8_t a_port)
 {
-	self->_port = a_port;
-	self->_state = a_port;
+	self->_port_mask = 1<<a_port;
+	self->_state = self->_port_mask;
+	self->_used = 0;
+	self->_time = millis();
 }
 
 void Contact_update(Contact* self)
 {
-	const uint8_t state = (PINB & self->_port);
+	const uint8_t state = (PINB & self->_port_mask);
 	if (state != self->_state)
 	{
-		self->_time = millis();
 		self->_state = state;
+		self->_used = 0;
+		self->_time = millis();
 	}
 }
 
@@ -184,6 +184,7 @@ typedef struct
 	Contact* _start;
 	Contact* _end;
 	uint32_t _start_time;
+	uint16_t _max_time;
 } Game;
 Game game;
 
@@ -193,18 +194,23 @@ void Game_init()
 	game._state = PENDING;
 	game._score = 0;
 	game._start = game._end = 0;
+	//Max time from ADC
+	ADCSRA |= (1<<ADSC);//start ADC conversion
+	while (!(ADCSRA & (1<<ADIF)));//poll ADC Interrupt Flag
+	ADCSRA |= (1<<ADIF);//clear ADC Interrupt Flag
+	game._max_time = 60 * ADC;
 }
 
 void Game_over()
 {
 	game._state = STOPPED;
 	game._score = 9;
-	Buzzer_play(BUZZER_GAME_OVER);
+	Buzzer_play(BUZZER_LONG_EVENT);
 }
 
 void Game_check_time()
 {
-	if (millis() - game._start_time > GAME_MAX_DURATION)
+	if (millis() - game._start_time > game._max_time)
 		Game_over();
 }
 
@@ -213,7 +219,8 @@ void Game_reset(Contact* a_start)
 	game._state = PENDING;
 	game._score = 0;
 	game._start = a_start;
-	game._end = ((a_start == &bound0) ? &bound1 : &bound0);
+	game._end = ((game._start == &bound0) ? &bound1 : &bound0);
+	a_start->_used = 1;
 	Buzzer_play(BUZZER_EVENT);
 }
 
@@ -227,14 +234,15 @@ void Game_start()
 void Game_terminate()
 {
 	game._state = STOPPED;
-	Buzzer_play(BUZZER_EVENT);
+	Buzzer_play(BUZZER_LONG_EVENT);
 }
 
-void Game_score_up()
+void Game_score_up(Contact* a_sensor)
 {
 	if (game._score < 8)
 	{
 		++game._score;
+		a_sensor->_used = 1;
 		Buzzer_play(BUZZER_EVENT);
 	}		
 	else
@@ -245,37 +253,27 @@ void Game_score_up()
 /************************************************************************/
 /* DISPLAY                                                              */
 /************************************************************************/
-typedef struct 
-{
-	uint8_t _value;
-} Display;
-Display display;
-
 void Display_init()
 {
-	display._value = 0;
-	PINA &= 0b11110000;
+	PORTA &= 0b11110000;
 }	
 
 void Display_update()
 {
-	if (display._value != game._score)
+	if (game._state == IN_PROGRESS)
 	{
-		display._value = game._score;
-		
-		if (game._state == IN_PROGRESS)
+		const unsigned long unit = millis() / 500;//1/2 second unit
+		if (unit & 1)
 		{
-			unsigned char sec = millis() / 1000;
-			if (sec & 1)
-			{
-				PINA = (PINA & 0b11110000) | BLANK_DISPLAY;
-			}
-			else
-			{
-				PINA = (PINA & 0b11110000) | display._value;
-			}
+			PORTA = (PORTA & 0b11110000) | BLANK_DISPLAY;
+		}
+		else
+		{
+			PORTA = (PORTA & 0b11110000) | game._score;
 		}
 	}
+	else
+		PORTA = (PORTA & 0b11110000) | game._score;
 }
 
 /************************************************************************/
@@ -293,13 +291,14 @@ int main(void)
 		
 	//ADC
 	ADCSRA = (1<<ADEN) | (1<<ADPS2) | (1<<ADPS1);//ADC prescaler 64
-	ADCSRB = (1<<ADLAR);//ADC Left Adjust Result
+	ADMUX = 7;//ADC channel 7
 		
 	//PWM for buzzer
-	OCR1A = F_CPU / BUZZER_FREQUENCY - 1;//6.6KHz = fPWM = fT1/(N*(1+TOP))
-	OCR1B = 0;
+	OCR1A = F_CPU / BUZZER_FREQUENCY - 1;//fPWM = fT1/(N*(1+TOP))
+	OCR1B = OCR1A / 2;//Duty cyle 50%
 	TCCR1A = (1<<COM1B1) | (1<<WGM11) | (1<<WGM10);//non-inverted PWM -> COM1B[1:0] = 10 ; fast PWM with TOP=OCR1A -> WGM1[3:0] = 1111
-	TCCR1B = (1<<WGM13) | (1<<WGM12) | (1<<CS10);//fT1 = fCLK_IO / 1
+	TCCR1B = (1<<WGM13) | (1<<WGM12);
+	TIMSK1 = (1<<TOIE1);//Timer/Counter1 Overflow Interrupt Enable
 	
 	//Timer to measure time with millis()
 	TCCR0A = 0;//normal port operation, non-PWM mode
@@ -308,23 +307,12 @@ int main(void)
 	
 	
 	/************************************************************************/
-	/* BUZZER VOLUME                                                        */
-	/************************************************************************/
-	ADMUX = 7;//ADC channel 7
-	ADCSRA |= (1<<ADSC);//start ADC conversion
-	while (!(ADCSRA & (1<<ADIF)))
-		;//poll ADC Interrupt Flag
-	ADCSRA |= (1<<ADIF);//clear ADC Interrupt Flag
-	OCR1BL = ADCH;//set volume from high byte only (left adjust result)
-	
-	
-		
-	/************************************************************************/
 	/* GAME                                                                 */
 	/************************************************************************/
 	sei();//enable global interrupt mask
 	Contact_init(&bound0, PINB0);
 	Contact_init(&bound1, PINB1);
+	Contact_init(&sensor, PINB2);
 	Game_init();
 	Display_init();
 		
@@ -352,16 +340,16 @@ int main(void)
 		Contact_update(&sensor);
 		
 		//read at bound0
-		if (!bound0._state && Contact_last_over(&bound0, BOUND_TIME))
+		if (!bound0._used && !bound0._state && Contact_last_over(&bound0, BOUND_TIME))
 			Game_reset(&bound0);
 				
 		//read at bound1
-		if (!bound1._state && Contact_last_over(&bound1, BOUND_TIME))
+		if (!bound1._used && !bound1._state && Contact_last_over(&bound1, BOUND_TIME))
 			Game_reset(&bound1);
 		
 		
 		//check game is init
-		if (game._start)
+		if (game._start && game._end)
 		{
 			//read at start
 			if (game._state == PENDING)
@@ -381,8 +369,8 @@ int main(void)
 				{
 					if (Contact_last_over(&sensor, BOUND_TIME))
 						Game_over();
-					else if (Contact_last_over(&sensor, DEBOUNCE_TIME))
-						Game_score_up();
+					else if (!sensor._used && Contact_last_over(&sensor, DEBOUNCE_TIME))
+						Game_score_up(&sensor);
 				}						
 			}
 		}

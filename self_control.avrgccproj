@@ -13,19 +13,43 @@
     <AssemblyName>self_control</AssemblyName>
     <Name>self_control</Name>
     <RootNamespace>self_control</RootNamespace>
-    <avrtool>com.atmel.avrdbg.tool.simulator</avrtool>
-    <avrtoolinterface />
+    <avrtool>com.atmel.avrdbg.tool.avrdragon</avrtool>
+    <avrtoolinterface>debugWIRE</avrtoolinterface>
     <com_atmel_avrdbg_tool_simulator>
-      <ToolType xmlns="">com.atmel.avrdbg.tool.simulator</ToolType>
-      <ToolName xmlns="">AVR Simulator</ToolName>
-      <ToolNumber xmlns="">
+      <ToolType>com.atmel.avrdbg.tool.simulator</ToolType>
+      <ToolName>AVR Simulator</ToolName>
+      <ToolNumber>
       </ToolNumber>
-      <Channel xmlns="">
+      <Channel>
         <host>127.0.0.1</host>
-        <port>4664</port>
+        <port>1117</port>
         <ssl>False</ssl>
       </Channel>
     </com_atmel_avrdbg_tool_simulator>
+    <com_atmel_avrdbg_tool_avrdragon>
+      <ToolType xmlns="">com.atmel.avrdbg.tool.avrdragon</ToolType>
+      <ToolName xmlns="">AVR Dragon</ToolName>
+      <ToolNumber xmlns="">00A200018039</ToolNumber>
+      <Channel xmlns="">
+        <host>127.0.0.1</host>
+        <port>1117</port>
+        <ssl>False</ssl>
+      </Channel>
+      <ToolOptions xmlns="">
+        <InterfaceName>debugWIRE</InterfaceName>
+        <InterfaceProperties>
+          <JtagDbgClock>1000000</JtagDbgClock>
+          <JtagProgClock>1000000</JtagProgClock>
+          <IspClock>150000</IspClock>
+          <JtagInChain>false</JtagInChain>
+          <JtagDevicesBefore>0</JtagDevicesBefore>
+          <JtagDevicesAfter>0</JtagDevicesAfter>
+          <JtagInstrBitsBefore>0</JtagInstrBitsBefore>
+          <JtagInstrBitsAfter>0</JtagInstrBitsAfter>
+          <DebugWireClockDiv>0</DebugWireClockDiv>
+        </InterfaceProperties>
+      </ToolOptions>
+    </com_atmel_avrdbg_tool_avrdragon>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
     <ToolchainSettings>
@@ -38,6 +62,7 @@
     </ListValues>
   </avrgcc.compiler.symbols.DefSymbols>
   <avrgcc.compiler.optimization.level>Optimize for size (-Os)</avrgcc.compiler.optimization.level>
+  <avrgcc.compiler.optimization.OtherFlags>-mcall-prologues</avrgcc.compiler.optimization.OtherFlags>
   <avrgcc.compiler.optimization.PackStructureMembers>True</avrgcc.compiler.optimization.PackStructureMembers>
   <avrgcc.compiler.optimization.AllocateBytesNeededForEnum>True</avrgcc.compiler.optimization.AllocateBytesNeededForEnum>
   <avrgcc.compiler.warnings.AllWarnings>True</avrgcc.compiler.warnings.AllWarnings>
@@ -51,27 +76,35 @@
       </MemorySegments>
     </MemorySettings>
     <OutputType>Executable</OutputType>
+    <GenerateHexFile>True</GenerateHexFile>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <ToolchainSettings>
       <AvrGcc>
-        <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
-        <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
-        <avrgcc.compiler.symbols.DefSymbols>
-          <ListValues>
-            <Value>F_CPU=8000000UL</Value>
-          </ListValues>
-        </avrgcc.compiler.symbols.DefSymbols>
-        <avrgcc.compiler.optimization.PackStructureMembers>True</avrgcc.compiler.optimization.PackStructureMembers>
-        <avrgcc.compiler.optimization.AllocateBytesNeededForEnum>True</avrgcc.compiler.optimization.AllocateBytesNeededForEnum>
-        <avrgcc.compiler.optimization.DebugLevel>Default (-g2)</avrgcc.compiler.optimization.DebugLevel>
-        <avrgcc.compiler.warnings.AllWarnings>True</avrgcc.compiler.warnings.AllWarnings>
-        <avrgcc.assembler.debugging.DebugLevel>Default (-g2)</avrgcc.assembler.debugging.DebugLevel>
-      </AvrGcc>
+  <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
+  <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
+  <avrgcc.compiler.symbols.DefSymbols>
+    <ListValues>
+      <Value>F_CPU=8000000UL</Value>
+    </ListValues>
+  </avrgcc.compiler.symbols.DefSymbols>
+  <avrgcc.compiler.optimization.level>Optimize (-O1)</avrgcc.compiler.optimization.level>
+  <avrgcc.compiler.optimization.PackStructureMembers>True</avrgcc.compiler.optimization.PackStructureMembers>
+  <avrgcc.compiler.optimization.AllocateBytesNeededForEnum>True</avrgcc.compiler.optimization.AllocateBytesNeededForEnum>
+  <avrgcc.compiler.optimization.DebugLevel>Default (-g2)</avrgcc.compiler.optimization.DebugLevel>
+  <avrgcc.compiler.warnings.AllWarnings>True</avrgcc.compiler.warnings.AllWarnings>
+  <avrgcc.assembler.debugging.DebugLevel>Default (-g2)</avrgcc.assembler.debugging.DebugLevel>
+</AvrGcc>
     </ToolchainSettings>
     <MemorySettings>
+      <MemorySegments>
+  <InitialStack IsEnabled="0">
+    <Address>0x80</Address>
+  </InitialStack>
+</MemorySegments>
     </MemorySettings>
     <OutputType>Executable</OutputType>
+    <GenerateHexFile>True</GenerateHexFile>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="self_control.c">
