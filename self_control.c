@@ -37,7 +37,8 @@
 /************************************************************************/
 #define BLANK_DISPLAY 15
 
-#define DEBOUNCE_TIME 40
+#define DEBOUNCE_TIME 50
+#define GRACE_TIME 500
 #define BOUND_TIME 1800
 
 #define BUZZER_FREQUENCY 4000
@@ -136,7 +137,6 @@ typedef struct
 	uint8_t _used;
 } Contact;
 Contact bound0, bound1;
-Contact sensor;
 
 void Contact_init(Contact* self, uint8_t a_port)
 {
@@ -144,6 +144,14 @@ void Contact_init(Contact* self, uint8_t a_port)
 	self->_state = self->_port_mask;
 	self->_used = 0;
 	self->_time = millis();
+}
+
+/**
+ * \param a_time must be <65535
+ */
+uint8_t Contact_last_over(Contact* self, uint16_t a_time)
+{
+	return ((millis() - self->_time) > a_time);
 }
 
 void Contact_update(Contact* self)
@@ -157,13 +165,7 @@ void Contact_update(Contact* self)
 	}
 }
 
-/**
- * \param a_time must be <65535
- */
-uint8_t Contact_last_over(Contact* self, uint16_t a_time)
-{
-	return ((millis() - self->_time) > a_time);
-}
+
 
 
 
@@ -184,6 +186,7 @@ typedef struct
 	Contact* _start;
 	Contact* _end;
 	uint32_t _start_time;
+	uint32_t _last_touched;
 	uint16_t _max_time;
 } Game;
 Game game;
@@ -194,6 +197,7 @@ void Game_init()
 	game._state = PENDING;
 	game._score = 0;
 	game._start = game._end = 0;
+	game._last_touched = 0;
 	//Max time from ADC
 	ADCSRA |= (1<<ADSC);//start ADC conversion
 	while (!(ADCSRA & (1<<ADIF)));//poll ADC Interrupt Flag
@@ -237,12 +241,12 @@ void Game_terminate()
 	Buzzer_play(BUZZER_LONG_EVENT);
 }
 
-void Game_score_up(Contact* a_sensor)
+void Game_score_up()
 {
 	if (game._score < 8)
 	{
 		++game._score;
-		a_sensor->_used = 1;
+		game._last_touched = millis();
 		Buzzer_play(BUZZER_EVENT);
 	}		
 	else
@@ -276,6 +280,7 @@ void Display_update()
 		PORTA = (PORTA & 0b11110000) | game._score;
 }
 
+
 /************************************************************************/
 /* MAIN                                                                 */
 /************************************************************************/
@@ -285,7 +290,6 @@ int main(void)
 	/* SETUP                                                                */
 	/************************************************************************/
 	//Digital I/O
-	DDRB = 0;//digital inputs
 	PORTB = (1<<PORTB2) | (1<<PORTB1) | (1<<PORTB0);//{0 1 2} with internal pullup
 	DDRA = (1<<DDA5) | (1<<DDA3) | (1<<DDA2) | (1<<DDA1) | (1<<DDA0);//digital outputs for buzzer and BCD driver (ABCD wires)
 		
@@ -312,12 +316,12 @@ int main(void)
 	sei();//enable global interrupt mask
 	Contact_init(&bound0, PINB0);
 	Contact_init(&bound1, PINB1);
-	Contact_init(&sensor, PINB2);
 	Game_init();
 	Display_init();
-		
-    while (1)
-    {
+
+	
+	while (1)
+	{
 		//si on touche un bord plus de 3 secondes, celui-ci devient start -> init_game(PIN_NBR)
 		//si on ne touche plus le bord de départ depuis plus de 15ms c'est parti
 		//si on touche le fil plus de 15ms c'est une touche
@@ -337,7 +341,7 @@ int main(void)
 		//Update contact state
 		Contact_update(&bound0);
 		Contact_update(&bound1);
-		Contact_update(&sensor);
+		
 		
 		//read at bound0
 		if (!bound0._used && !bound0._state && Contact_last_over(&bound0, BOUND_TIME))
@@ -365,13 +369,8 @@ int main(void)
 					Game_terminate();
 			
 				//read at sensor
-				if (!sensor._state)
-				{
-					if (Contact_last_over(&sensor, BOUND_TIME))
-						Game_over();
-					else if (!sensor._used && Contact_last_over(&sensor, DEBOUNCE_TIME))
-						Game_score_up(&sensor);
-				}						
+				if (!(PINB & (1<<PINB2)) && (millis() - game._last_touched > GRACE_TIME))
+					Game_score_up();
 			}
 		}
 		
